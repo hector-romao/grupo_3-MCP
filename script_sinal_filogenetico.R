@@ -10,14 +10,15 @@ library(phylosignal)
 library(caper)
 library(phylolm)
 library(here)
+library(ggtree)
 
 
 ###Importação dos dados
-
 #Importação da árvore
 phy <-read.tree(here::here("data/insecta_tree.txt"))
-plot(phy)
+ggtree(phy, layout = "circular") + geom_tiplab(aes(angle = angle), size = 1, color = "gray")
 is.ultrametric(phy)
+length(phy$tip.label)
 
 #Importação da tabela com os tratis analisados
 traits <-read.table("data/insecta_traits.tsv",h=T,row.names=1)
@@ -26,21 +27,22 @@ head(traits)
 ###Preparo dos objetos para as analises
 c_type_count <-as.matrix(traits[,1])
 head(c_type_count)
+hist(log(c_type_count)+1)
 i_type_count <-as.matrix(traits[,2])
 head(i_type_count)
 
 
-rownames(c_type_count) <-phy$tip.label #para ape/geiger...
-rownames(i_type_count) <-phy$tip.label #para ape/geiger...
+#Objetos no formato necessário para os pacotes ape/geiger
+rownames(c_type_count) <-phy$tip.label 
+rownames(i_type_count) <-phy$tip.label 
 head(c_type_count)
 head(i_type_count)
 
 #PHYLOGENETIC SIGNAL
-#MODEL-BASED METHODS
+
+#MODEL-BASED METHODS: Modelos que baseiam na adequação da estrutura de covariância presente na filogenia
 
 #BLOMBERG's K
-plot(phy)
-traits
 names(c_type_count) <-phy$tip.labels
 names(i_type_count) <-phy$tip.labels
 names(range) <-phy$tip.labels
@@ -51,8 +53,11 @@ names(log_c_type_count) <- rownames(c_type_count)
 log_i_type_count <- log(i_type_count[,1]+1)
 names(log_i_type_count) <- rownames(i_type_count)
 
-k_obs_c_type <- Kcalc(log_c_type_count, phy)
+#Valores do K observado
+k_obs_c_type <- Kcalc(log_c_type_count, phy) 
+print(paste0("Valor observado de K para C-type é: ", k_obs_c_type))
 k_obs_i_type <- Kcalc(log_i_type_count, phy)
+print(paste0("Valor observado de K para I-type é: ", k_obs_i_type))
 
 #A note on randomization of traits for analysis with ape 
 #Species names will be randomized with traits, so match will eliminate randomizations. So,...
@@ -65,11 +70,12 @@ names(bs) <-phy$tip.label
 traits[, 1, drop = FALSE]
 print(bs)
 
-Kbm <-numeric()
-Krand <-numeric()
-Knorm <-numeric ()
+Kbm <-numeric() #K sob movimento browniano
+Krand <-numeric() #K com os valores permutados
+Knorm <-numeric () #K com valores aleatorios seguindo distribuição normal
 
-for(i in 1:10){
+#50 simulações da evolução dos traços na nossa arvore sob diferentes concepções
+for(i in 1:50){
   
   T.brownian <- fastBM(phy, a = 10, sig2 = 10, internal = F, nsim = 1)
   Kbm[i] <-Kcalc(T.brownian,phy)
@@ -123,14 +129,17 @@ phylosig(phy,log_c_type_count,method="lambda",test=T) #likelihood test for lambd
 #################################################################################
 
 #Moran
+
+#Transformação da nossa arvore em uma matriz de peso de acordo com a matriz de proporção dos ramos
 phy.cor <-vcv(phy,model="Brownian",cor=T)
 diag(phy.cor) <-0
+head(phy.cor)
 
 Moran.I(log_i_type_count,phy.cor) #i_type_count
 Moran.I(log_c_type_count,phy.cor) #c_type_count
 
 
-sim.trait <- fastBM(phy, a = 10, sig2 = 10, internal = F, nsim = 100) #Simula a evolução de um traço sob BM
+sim.trait <- fastBM(phy, a = 10, sig2 = 10, internal = F, nsim = 1000) #Simula a evolução de um traço sob BM
 
 
 #Variaveis
@@ -151,6 +160,7 @@ for(i in 1:ncol(sim.trait)){ #Para cada coluna (simulação)
 
 ###Observação dos casos
 hist(I.sim,nclass=100,col="grey",xlab="Moran's I under BM",ylab="simulations",main="") #Brownian expectation
+mean(I.sim)
 hist(I.sim2,nclass=100,col="grey",xlab="Moran's I (null normal)",ylab="simulations",main="") #Null distribution
 hist(I.sim3,nclass=100,col="grey",xlab="Moran's I (null randomized)",ylab="simulations",main="") #Null distribution
 
@@ -166,9 +176,22 @@ quantile(I.sim2,c(0.025,0.975))
 quantile(I.sim3,c(0.025,0.975))
 
 
-#mudando o sim.trait o que ocorre...?
+#Simulação com uma evolução lenta (alto sinal filogenético)
 
-#A very simple correlogram...
+sim.trait.w <- fastBM(phy, a = 5, sig2 =0.1, internal = F, nsim = 100) #Simula a evolução de um traço sob BM
+I.sim.w <-numeric()
+W <- 1 / cophenetic(phy) #Deslocando o peso da nossa matriz de vizinhança
+diag(W) <-0
+
+for(i in 1:ncol(sim.trait.w)){ #Para cada coluna (simulação) 
+  I.sim.w[i] <-Moran.I(sim.trait.w[,i],W)$observed
+}
+hist(I.sim.w,nclass=100,col="grey",xlab="Moran's I under BM",ylab="simulations",main="") #Brownian expectation
+mean(I.sim.w)
+
+
+
+#Utilização com recortes por correlogramas
 dist <-as.matrix(cophenetic(phy))
 hist(dist)
 klim <- c(0,50,100,200,400,600,800,1030) #Recortes de tempo
@@ -212,20 +235,26 @@ dist <-as.matrix(cophenetic(phy))
 dist <-sqrt(dist) #para PSR, deixando linear com distancias (BM)
 pcoa <-pcoa(dist)
 vec <-pcoa$vectors
+head(vec)
 val <-pcoa$values
-eigcum <-val[1:279,4]
+head(val)
+eigcum <-val[1:279,4] #Proporção acumulada dos autovetores
 
-#3 axes
+#PVR com os 3 eixos explicativos
 phy_pvr1 <-phylo4d(phy,vec[,1:3]) #i_type_count size and c_type_count size
 table.phylo4d(phy_pvr1, show.tip.label = FALSE,center=FALSE, ratio.tree = 0.7, box = FALSE, cex.symbol = 0.4, cex.label = 1)
 
-#Plottando somente os afideos
-clado_HU <- extract.clade(phy, node = 297)
-phy_pvr1 <-phylo4d(clado_HU,vec[,1:3])
-table.phylo4d(phy_pvr1, show.tip.label = FALSE,center=FALSE, ratio.tree = 0.7, box = FALSE, cex.symbol = 0.4, cex.label = 1)
+#Plottando somente Polyneoptera
+clado_Pol <- extract.clade(phy, node = 289)
+plot(clado_Pol)
+phy_pvr2 <-phylo4d(clado_Pol,vec[,1:3])
+table.phylo4d(phy_pvr2, show.node.label = F, show.tip.label = FALSE,center=FALSE, ratio.tree = 0.7, box = FALSE, cex.symbol = 0.4, cex.label = 1)
 
 
 #3 methods for eigenvector selection baseados nos valores de r2 de acordo com a seleção
+
+
+#Metodo 1
 #selecting eivectors with eigenvalues > 0.30
 vec30<-min(which(eigcum > 0.55)) #Pegando somente os eixos que juntam explicam 55 da variação
 summary(lm(log_c_type_count~vec[,1:vec30]))
@@ -237,10 +266,14 @@ S.PVR <-lm(log_c_type_count~vec[,1:vec30])$residuals #Observação se os residuo
 Moran.I(S.PVR,phy.cor)
 
 
+#Metodo 2
 #stepwise
-summary(step(lm(log_c_type_count~vec[,1:min(which(eigcum > 0.55))-1]),direction="forward"))
+#Mantem os eixos que melhoram o AIC
+summary(step(lm(log_c_type_count~vec[,1:min(which(eigcum > 0.55))-1]),direction="forward")) 
 summary(step(lm(log_i_type_count~vec[,1:min(which(eigcum > 0.55))-1]),direction="forward"))
 
+
+#Metodo 3
 #PVR with eigevector selection by significant correlations with Y
 pv <-numeric()
 for(i in 1:ncol(vec)){
@@ -250,7 +283,7 @@ for(i in 1:ncol(vec)){
 selpvr <-which(pv < 0.05)
 vec_sel <-vec[,selpvr]
 summary(lm(log_c_type_count~vec_sel))
-S.PVR1 <-lm(log_c_type_count~vec_sel)$residuals #para evolu??o correlacionada...
+S.PVR1 <-lm(log_c_type_count~vec_sel)$residuals #para evolução correlacionada...
 
 Moran.I(S.PVR1,phy.cor)
 
@@ -377,21 +410,21 @@ summary(lm(log_c_type_count~vec.opt))
 
 
 
-#Under Brownian motion...
+#Relação dos valores de r2 de acordo com uma simulação sob BM
 sim.trait <- fastBM(phy, a = 10, sig2 = 10, internal = F, nsim = 1000) #brownian...
 
 r2.pvr <-numeric()
 for(i in 1:ncol(sim.trait)){
-  r2.pvr[i] <-summary(lm(sim.trait[,i]~vec[,1:2]))$r.squared
+  r2.pvr[i] <-summary(lm(sim.trait[,i]~vec[,1:8]))$r.squared
 }
-hist(r2.pvr,nclass=50,col="grey",main="",xlab="R2 (PVR - 2 axes)",ylab="Simulations")
-abline(v=0.98,col="red",lwd=2)
+hist(r2.pvr,nclass=50,col="grey",main="",xlab="R2 (PVR - 8 axes)",ylab="Simulations")
+abline(v=0.9,col="red",lwd=2)
 median(r2.pvr)
 
 
 
 #PSR Curve
-r2psr <-numeric()
+r2psr <-numeric() 
 r2bw <-numeric()
 difr2 <-numeric()
 
@@ -399,43 +432,50 @@ for(i in 1:(nrow(dist)-1)){
   r2psr[i] <-summary(lm(log_c_type_count~vec[,1:i]))$r.squared
 }
 
-eig <-append(0,eigcum[-10])
+eig <-append(0,eigcum[-279])
 r2psr0 <-append(0,r2psr)
 plot(eig,r2psr0,pch=16,cex=1.25,type="b",xlim=c(0,1),ylim=c(0,1))
 abline(a=0,b=1,lty=2,lwd=2)
 
 
+#Observação com a manipulação do ramo de Hermetia
 
-phy.homo <-phy
-phy.homo$edge.length[7] <- (phy.homo$edge.length[7] *  6)
-phy.homo$edge.length[2] <- (phy.homo$edge.length[2] *  15)
-plot(phy.homo)
-dist <-as.matrix(cophenetic(phy.homo))
+#Plottando somente Diptera
+clado_Dip <- extract.clade(phy, node = 467)
+plot(clado_Dip)
+
+phy.Dip <-clado_Dip
+phy.Dip$edge.length[38] <- (phy.Dip$edge.length[38] * 6)
+phy.Dip$edge.length[1] <- (phy.Dip$edge.length[1] *  15)
+plot(phy.Dip)
+dist <-as.matrix(cophenetic(phy.Dip))
 dist <-sqrt(dist)
 pcoa <-pcoa(dist)
 vec <-pcoa$vectors
 val <-pcoa$values
-eigcum <-val[1:279,4]
+eigcum <-val[1:91,4]
 
 #PSR Curve
 r2psr <-numeric()
 r2bw <-numeric()
 difr2 <-numeric()
-
+names(log_c_type_count)
+phy.Dip$tip.label
+log_c_type_count <- log_c_type_count[phy.Dip$tip.label]
 for(i in 1:(nrow(dist)-1)){
   r2psr[i] <-summary(lm(log_c_type_count~vec[,1:i]))$r.squared
 }
 
-eig <-append(0,eigcum[-10])
+eig <-append(0,eigcum[-92])
 r2psr0 <-append(0,r2psr)
 plot(eig,r2psr0,pch=16,cex=1.25,type="b",xlim=c(0,1),ylim=c(0,1))
-abline(a=0,b=1,lty=2,lwd=2)
+abline(a=0,b=1,lty=2,lwd=2) #Linha seguindo BM
 
 
 
 #PSR Brownian
 brown_r2 <-matrix(0,ncol(sim.trait),length(r2psr))
-sim.trait <- fastBM(phy, a = 10, sig2 = 10, internal = F, nsim = 10) #brownian...
+sim.trait <- fastBM(phy.Dip, a = 10, sig2 = 10, internal = F, nsim = 10) #brownian...
 
 for(i in 1:ncol(sim.trait)){
   
